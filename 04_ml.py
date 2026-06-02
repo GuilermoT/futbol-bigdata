@@ -23,6 +23,7 @@ spark.sparkContext.setLogLevel("ERROR")
 GOLD_STATS_EQUIPOS = "/workspaces/futbol-bigdata/ficheros/gold/stats_equipos"
 GOLD_JUGADORES     = "/workspaces/futbol-bigdata/ficheros/gold/jugadores"
 GOLD_NOTICIAS      = "/workspaces/futbol-bigdata/ficheros/gold/noticias"
+BRONZE_TEAMS       = "/workspaces/futbol-bigdata/ficheros/bronze/teams"
 
 GOLD_CLUSTERS      = "/workspaces/futbol-bigdata/ficheros/gold/clusters_equipos"
 GOLD_CLUSTERS_JUG  = "/workspaces/futbol-bigdata/ficheros/gold/clusters_jugadores"
@@ -34,8 +35,8 @@ GOLD_PALABRAS      = "/workspaces/futbol-bigdata/ficheros/gold/palabras_clave"
 print("=== KMeans: Clustering de equipos ===")
 
 df_equipos = spark.read.parquet(GOLD_STATS_EQUIPOS)
+df_teams   = spark.read.parquet(BRONZE_TEAMS)
 
-# Features: goles marcados, goles recibidos, partidos
 assembler = VectorAssembler(
     inputCols=[
         "media_goles_marcados",
@@ -47,7 +48,6 @@ assembler = VectorAssembler(
 
 df_features = assembler.transform(df_equipos)
 
-# Escalar features
 scaler = StandardScaler(
     inputCol="features_raw",
     outputCol="features",
@@ -58,7 +58,6 @@ scaler = StandardScaler(
 scaler_model = scaler.fit(df_features)
 df_scaled = scaler_model.transform(df_features)
 
-# KMeans con k=3 (equipos top, medios, bajos)
 kmeans = KMeans(
     featuresCol="features",
     predictionCol="cluster",
@@ -80,7 +79,6 @@ df_clusters.groupBy("cluster").agg(
     avg("media_goles_recibidos").alias("media_goles_recibidos")
 ).orderBy("cluster").show(truncate=False)
 
-# Evaluación Silhouette
 evaluator = ClusteringEvaluator(
     featuresCol="features",
     predictionCol="cluster",
@@ -94,7 +92,7 @@ print(f"Silhouette Score: {silhouette:.4f}")
 df_clusters.select(
     "home_team_api_id", "cluster",
     "media_goles_marcados", "media_goles_recibidos",
-    "partidos_local"
+    "partidos_local", "nombre_equipo"
 ).write.mode("overwrite").parquet(GOLD_CLUSTERS)
 print(f"Clusters equipos guardado en: {GOLD_CLUSTERS}")
 
@@ -156,7 +154,6 @@ print("\n=== NLP: Palabras clave en noticias ===")
 
 df_noticias = spark.read.parquet(GOLD_NOTICIAS)
 
-# Stopwords básicas
 stopwords = [
     "the", "a", "an", "and", "or", "but", "in", "on", "at", "to",
     "for", "of", "with", "his", "her", "their", "that", "this",
