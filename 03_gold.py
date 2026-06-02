@@ -1,7 +1,8 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, avg, sum as _sum, count, round as _round,
-    max as _max, min as _min, desc
+    max as _max, min as _min, desc, lower, regexp_replace,
+    explode, split, trim
 )
 
 # ================================================
@@ -22,24 +23,25 @@ SILVER_MATCHES  = "/workspaces/futbol-bigdata/ficheros/silver/matches"
 SILVER_EVENTS   = "/workspaces/futbol-bigdata/ficheros/silver/events"
 SILVER_NOTICIAS = "/workspaces/futbol-bigdata/ficheros/silver/noticias"
 
-BRONZE_TEAMS    = "/workspaces/futbol-bigdata/ficheros/bronze/teams"
-BRONZE_LEAGUES  = "/workspaces/futbol-bigdata/ficheros/bronze/leagues"
+BRONZE_TEAMS     = "/workspaces/futbol-bigdata/ficheros/bronze/teams"
+BRONZE_LEAGUES   = "/workspaces/futbol-bigdata/ficheros/bronze/leagues"
 BRONZE_COUNTRIES = "/workspaces/futbol-bigdata/ficheros/bronze/countries"
 
-GOLD_STATS_LIGA     = "/workspaces/futbol-bigdata/ficheros/gold/stats_liga"
-GOLD_STATS_EQUIPOS  = "/workspaces/futbol-bigdata/ficheros/gold/stats_equipos"
-GOLD_EVENTOS_TIPOS  = "/workspaces/futbol-bigdata/ficheros/gold/eventos_tipos"
-GOLD_JUGADORES      = "/workspaces/futbol-bigdata/ficheros/gold/jugadores"
-GOLD_NOTICIAS       = "/workspaces/futbol-bigdata/ficheros/gold/noticias"
-GOLD_CLUSTERS       = "/workspaces/futbol-bigdata/ficheros/gold/clusters_equipos"
-GOLD_CLUSTERS_JUG   = "/workspaces/futbol-bigdata/ficheros/gold/clusters_jugadores"
-GOLD_PALABRAS       = "/workspaces/futbol-bigdata/ficheros/gold/palabras_clave"
+GOLD_STATS_LIGA        = "/workspaces/futbol-bigdata/ficheros/gold/stats_liga"
+GOLD_STATS_EQUIPOS     = "/workspaces/futbol-bigdata/ficheros/gold/stats_equipos"
+GOLD_EVENTOS_TIPOS     = "/workspaces/futbol-bigdata/ficheros/gold/eventos_tipos"
+GOLD_JUGADORES         = "/workspaces/futbol-bigdata/ficheros/gold/jugadores"
+GOLD_JUGADORES_EVENTOS = "/workspaces/futbol-bigdata/ficheros/gold/jugadores_eventos"
+GOLD_NOTICIAS          = "/workspaces/futbol-bigdata/ficheros/gold/noticias"
+GOLD_CLUSTERS          = "/workspaces/futbol-bigdata/ficheros/gold/clusters_equipos"
+GOLD_CLUSTERS_JUG      = "/workspaces/futbol-bigdata/ficheros/gold/clusters_jugadores"
+GOLD_PALABRAS          = "/workspaces/futbol-bigdata/ficheros/gold/palabras_clave"
 
 # ------------------------------------------------
 # Cargar tablas auxiliares
 # ------------------------------------------------
-df_teams    = spark.read.parquet(BRONZE_TEAMS)
-df_leagues  = spark.read.parquet(BRONZE_LEAGUES)
+df_teams     = spark.read.parquet(BRONZE_TEAMS)
+df_leagues   = spark.read.parquet(BRONZE_LEAGUES)
 df_countries = spark.read.parquet(BRONZE_COUNTRIES)
 
 # ------------------------------------------------
@@ -65,7 +67,6 @@ df_stats_liga = df_partidos.groupBy("season", "league_id", "country_id").agg(
 
 print(f"Stats liga: {df_stats_liga.count()} filas")
 df_stats_liga.show(5, truncate=False)
-
 df_stats_liga.write.mode("overwrite").parquet(GOLD_STATS_LIGA)
 print(f"Gold stats liga guardado en: {GOLD_STATS_LIGA}")
 
@@ -90,7 +91,6 @@ df_stats_equipos = df_partidos.groupBy("home_team_api_id").agg(
 
 print(f"Stats equipos: {df_stats_equipos.count()} filas")
 df_stats_equipos.show(5, truncate=False)
-
 df_stats_equipos.write.mode("overwrite").parquet(GOLD_STATS_EQUIPOS)
 print(f"Gold stats equipos guardado en: {GOLD_STATS_EQUIPOS}")
 
@@ -108,7 +108,6 @@ df_eventos_tipos = df_events.groupBy("event_type", "team").agg(
 
 print(f"Tipos de eventos: {df_eventos_tipos.count()} filas")
 df_eventos_tipos.show(10, truncate=False)
-
 df_eventos_tipos.write.mode("overwrite").parquet(GOLD_EVENTOS_TIPOS)
 print(f"Gold eventos tipos guardado en: {GOLD_EVENTOS_TIPOS}")
 
@@ -126,12 +125,29 @@ df_jugadores = df_events.filter(
 
 print(f"Jugadores: {df_jugadores.count()} filas")
 df_jugadores.show(10, truncate=False)
-
 df_jugadores.write.mode("overwrite").parquet(GOLD_JUGADORES)
 print(f"Gold jugadores guardado en: {GOLD_JUGADORES}")
 
 # ------------------------------------------------
-# 5. NOTICIAS GOLD
+# 5. STATS POR JUGADOR Y TIPO DE EVENTO
+# ------------------------------------------------
+print("=== Gold: Stats por jugador y evento ===")
+
+df_jugadores_eventos = df_events.filter(
+    col("player").isNotNull() &
+    col("event_type").isNotNull()
+).groupBy("player", "team", "event_type").agg(
+    count("*").alias("total_eventos"),
+    _round(avg("duration"), 2).alias("duracion_media")
+).orderBy(desc("total_eventos"))
+
+print(f"Jugadores x eventos: {df_jugadores_eventos.count()} filas")
+df_jugadores_eventos.show(10, truncate=False)
+df_jugadores_eventos.write.mode("overwrite").parquet(GOLD_JUGADORES_EVENTOS)
+print(f"Gold jugadores eventos guardado en: {GOLD_JUGADORES_EVENTOS}")
+
+# ------------------------------------------------
+# 6. NOTICIAS GOLD
 # ------------------------------------------------
 print("=== Gold: Noticias ===")
 
@@ -142,16 +158,13 @@ df_noticias_gold = df_noticias.select(
 ).filter(col("content").isNotNull())
 
 print(f"Noticias gold: {df_noticias_gold.count()} filas")
-
 df_noticias_gold.write.mode("overwrite").parquet(GOLD_NOTICIAS)
 print(f"Gold noticias guardado en: {GOLD_NOTICIAS}")
 
 # ------------------------------------------------
-# 6. PALABRAS CLAVE
+# 7. PALABRAS CLAVE
 # ------------------------------------------------
 print("=== Gold: Palabras clave ===")
-
-from pyspark.sql.functions import lower, regexp_replace, explode, split, trim
 
 stopwords = [
     "the", "a", "an", "and", "or", "but", "in", "on", "at", "to",
