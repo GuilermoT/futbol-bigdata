@@ -36,6 +36,7 @@ GOLD_NOTICIAS          = "/workspaces/futbol-bigdata/ficheros/gold/noticias"
 GOLD_CLUSTERS          = "/workspaces/futbol-bigdata/ficheros/gold/clusters_equipos"
 GOLD_CLUSTERS_JUG      = "/workspaces/futbol-bigdata/ficheros/gold/clusters_jugadores"
 GOLD_PALABRAS          = "/workspaces/futbol-bigdata/ficheros/gold/palabras_clave"
+GOLD_CRUCE             = "/workspaces/futbol-bigdata/ficheros/gold/cruce_jugadores_prensa"
 
 # ------------------------------------------------
 # Cargar tablas auxiliares
@@ -112,13 +113,13 @@ df_eventos_tipos.write.mode("overwrite").parquet(GOLD_EVENTOS_TIPOS)
 print(f"Gold eventos tipos guardado en: {GOLD_EVENTOS_TIPOS}")
 
 # ------------------------------------------------
-# 4. STATS POR JUGADOR
+# 4. STATS POR JUGADOR — sin duplicados
 # ------------------------------------------------
 print("=== Gold: Stats por jugador ===")
 
 df_jugadores = df_events.filter(
     col("player").isNotNull()
-).groupBy("player", "team", "position").agg(
+).groupBy("player", "team").agg(
     count("*").alias("total_acciones"),
     _round(avg("duration"), 2).alias("duracion_media_accion")
 ).orderBy(desc("total_acciones"))
@@ -127,6 +128,41 @@ print(f"Jugadores: {df_jugadores.count()} filas")
 df_jugadores.show(10, truncate=False)
 df_jugadores.write.mode("overwrite").parquet(GOLD_JUGADORES)
 print(f"Gold jugadores guardado en: {GOLD_JUGADORES}")
+
+# ------------------------------------------------
+# 4b. CRUCE JUGADORES + MENCIONES EN PRENSA
+# ------------------------------------------------
+print("=== Gold: Cruce jugadores y prensa ===")
+
+df_noticias_raw = spark.read.parquet(SILVER_NOTICIAS)
+
+jugadores_barcelona = [
+    "Messi", "Busquets", "Alba", "Lenglet", "Dembele",
+    "Griezmann", "De Jong", "Ter Stegen", "Pique", "Pedri"
+]
+
+menciones = []
+for jugador in jugadores_barcelona:
+    n = df_noticias_raw.filter(
+        lower(col("content")).contains(jugador.lower())
+    ).count()
+    menciones.append((jugador, n))
+
+df_menciones = spark.createDataFrame(menciones, ["jugador", "menciones_prensa"])
+
+df_cruce = df_jugadores.join(
+    df_menciones,
+    df_jugadores.player.contains(df_menciones.jugador),
+    how="left"
+).select(
+    "player", "team", "total_acciones",
+    "duracion_media_accion", "menciones_prensa"
+).filter(col("menciones_prensa").isNotNull())
+
+print("=== Cruce jugadores + prensa ===")
+df_cruce.show(truncate=False)
+df_cruce.write.mode("overwrite").parquet(GOLD_CRUCE)
+print("Gold cruce jugadores prensa guardado")
 
 # ------------------------------------------------
 # 5. STATS POR JUGADOR Y TIPO DE EVENTO
