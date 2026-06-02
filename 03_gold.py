@@ -6,7 +6,6 @@ from pyspark.sql.functions import (
 
 # ================================================
 # GOLD — Agregaciones listas para análisis y Power BI
-# Lee desde Silver y genera tablas de negocio
 # ================================================
 
 spark = SparkSession.builder \
@@ -23,29 +22,46 @@ SILVER_MATCHES  = "/workspaces/futbol-bigdata/ficheros/silver/matches"
 SILVER_EVENTS   = "/workspaces/futbol-bigdata/ficheros/silver/events"
 SILVER_NOTICIAS = "/workspaces/futbol-bigdata/ficheros/silver/noticias"
 
+BRONZE_TEAMS    = "/workspaces/futbol-bigdata/ficheros/bronze/teams"
+BRONZE_LEAGUES  = "/workspaces/futbol-bigdata/ficheros/bronze/leagues"
+BRONZE_COUNTRIES = "/workspaces/futbol-bigdata/ficheros/bronze/countries"
+
 GOLD_STATS_LIGA     = "/workspaces/futbol-bigdata/ficheros/gold/stats_liga"
 GOLD_STATS_EQUIPOS  = "/workspaces/futbol-bigdata/ficheros/gold/stats_equipos"
 GOLD_EVENTOS_TIPOS  = "/workspaces/futbol-bigdata/ficheros/gold/eventos_tipos"
 GOLD_JUGADORES      = "/workspaces/futbol-bigdata/ficheros/gold/jugadores"
 GOLD_NOTICIAS       = "/workspaces/futbol-bigdata/ficheros/gold/noticias"
+GOLD_CLUSTERS       = "/workspaces/futbol-bigdata/ficheros/gold/clusters_equipos"
+GOLD_CLUSTERS_JUG   = "/workspaces/futbol-bigdata/ficheros/gold/clusters_jugadores"
+GOLD_PALABRAS       = "/workspaces/futbol-bigdata/ficheros/gold/palabras_clave"
 
 # ------------------------------------------------
-# 1. STATS POR TEMPORADA Y LIGA
+# Cargar tablas auxiliares
+# ------------------------------------------------
+df_teams    = spark.read.parquet(BRONZE_TEAMS)
+df_leagues  = spark.read.parquet(BRONZE_LEAGUES)
+df_countries = spark.read.parquet(BRONZE_COUNTRIES)
+
+# ------------------------------------------------
+# 1. STATS POR TEMPORADA Y LIGA — con nombres
 # ------------------------------------------------
 print("=== Gold: Stats por temporada ===")
 
 df_partidos = spark.read.parquet(SILVER_PARTIDOS)
 
-df_stats_liga = df_partidos.groupBy("season", "league_id").agg(
+df_stats_liga = df_partidos.groupBy("season", "league_id", "country_id").agg(
     count("*").alias("total_partidos"),
     _round(avg("total_goals"), 2).alias("media_goles"),
     _round(avg("home_team_goal"), 2).alias("media_goles_local"),
     _round(avg("away_team_goal"), 2).alias("media_goles_visitante"),
-    _sum("total_goals").alias("total_goles"),
-    count(col("resultado") == "local").alias("victorias_local"),
-    count(col("resultado") == "empate").alias("empates"),
-    count(col("resultado") == "visitante").alias("victorias_visitante")
-).orderBy("season", "league_id")
+    _sum("total_goals").alias("total_goles")
+).join(
+    df_leagues.select(col("id").alias("league_id"), col("name").alias("liga")),
+    on="league_id", how="left"
+).join(
+    df_countries.select(col("id").alias("country_id"), col("name").alias("pais")),
+    on="country_id", how="left"
+).orderBy("season", "liga")
 
 print(f"Stats liga: {df_stats_liga.count()} filas")
 df_stats_liga.show(5, truncate=False)
@@ -54,7 +70,7 @@ df_stats_liga.write.mode("overwrite").parquet(GOLD_STATS_LIGA)
 print(f"Gold stats liga guardado en: {GOLD_STATS_LIGA}")
 
 # ------------------------------------------------
-# 2. STATS POR EQUIPO LOCAL
+# 2. STATS POR EQUIPO — con nombres
 # ------------------------------------------------
 print("=== Gold: Stats por equipo ===")
 
@@ -64,6 +80,12 @@ df_stats_equipos = df_partidos.groupBy("home_team_api_id").agg(
     _round(avg("away_team_goal"), 2).alias("media_goles_recibidos"),
     _sum("home_team_goal").alias("total_goles_marcados"),
     _sum("away_team_goal").alias("total_goles_recibidos")
+).join(
+    df_teams.select(
+        col("team_api_id").alias("home_team_api_id"),
+        col("team_long_name").alias("nombre_equipo")
+    ),
+    on="home_team_api_id", how="left"
 ).orderBy(desc("total_goles_marcados"))
 
 print(f"Stats equipos: {df_stats_equipos.count()} filas")
@@ -109,7 +131,7 @@ df_jugadores.write.mode("overwrite").parquet(GOLD_JUGADORES)
 print(f"Gold jugadores guardado en: {GOLD_JUGADORES}")
 
 # ------------------------------------------------
-# 5. NOTICIAS GOLD — listas para NLP
+# 5. NOTICIAS GOLD
 # ------------------------------------------------
 print("=== Gold: Noticias ===")
 
@@ -117,14 +139,44 @@ df_noticias = spark.read.parquet(SILVER_NOTICIAS)
 
 df_noticias_gold = df_noticias.select(
     "title", "content", "author", "source", "publish-time"
-).filter(
-    col("content").isNotNull()
-)
+).filter(col("content").isNotNull())
 
 print(f"Noticias gold: {df_noticias_gold.count()} filas")
 
 df_noticias_gold.write.mode("overwrite").parquet(GOLD_NOTICIAS)
 print(f"Gold noticias guardado en: {GOLD_NOTICIAS}")
+
+# ------------------------------------------------
+# 6. PALABRAS CLAVE
+# ------------------------------------------------
+print("=== Gold: Palabras clave ===")
+
+from pyspark.sql.functions import lower, regexp_replace, explode, split, trim
+
+stopwords = [
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to",
+    "for", "of", "with", "his", "her", "their", "that", "this",
+    "was", "were", "is", "are", "be", "been", "has", "have", "had",
+    "he", "she", "they", "it", "as", "by", "from", "not", "we",
+    "who", "which", "will", "would", "could", "said", "also", "more"
+]
+
+df_palabras = df_noticias_gold \
+    .withColumn("content_clean",
+        regexp_replace(lower(col("content")), r"[^a-zA-Z\s]", "")
+    ) \
+    .withColumn("palabra", explode(split(col("content_clean"), r"\s+"))) \
+    .withColumn("palabra", trim(col("palabra"))) \
+    .filter(col("palabra") != "") \
+    .filter(~col("palabra").isin(stopwords)) \
+    .filter(col("palabra").rlike("^[a-z]{4,}$")) \
+    .groupBy("palabra") \
+    .agg(count("*").alias("frecuencia")) \
+    .orderBy(desc("frecuencia"))
+
+df_palabras.show(20, truncate=False)
+df_palabras.write.mode("overwrite").parquet(GOLD_PALABRAS)
+print(f"Palabras clave guardado en: {GOLD_PALABRAS}")
 
 print("=== GOLD COMPLETADO ===")
 
