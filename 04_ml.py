@@ -142,7 +142,7 @@ silhouette_jug = evaluator.evaluate(df_clusters_jug)
 print(f"Silhouette Jugadores: {silhouette_jug:.4f}")
 
 df_clusters_jug.select(
-    "player", "team", "position", "cluster",
+    "player", "team", "cluster",
     "total_acciones", "duracion_media_accion"
 ).write.mode("overwrite").parquet(GOLD_CLUSTERS_JUG)
 print(f"Clusters jugadores guardado en: {GOLD_CLUSTERS_JUG}")
